@@ -64,6 +64,7 @@ typedef struct Gt_Frame {
   unsigned position_is_offset: 1;
   unsigned total_crop: 1;
   unsigned rotation;
+  unsigned gravity_type;
 
   const char *input_filename;
 
@@ -330,5 +331,11 @@ void            blank_frameset(Gt_Frameset *, int from, int to, int delete_ob);
 
 extern int mode;
 extern int nested_mode;
+
+/**
+ * gravity
+ **/
+#define GRAVITY_TYPE_NONE       0
+#define GRAVITY_TYPE_CENTER     1
 
 #endif

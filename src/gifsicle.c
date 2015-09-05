@@ -197,6 +197,7 @@ static const char *output_option_types[] = {
 #define SAME_APP_EXTENSIONS_OPT 373
 #define IGNORE_ERRORS_OPT       374
 #define THREADS_OPT             375
+#define GRAVITY_OPT             376
 
 #define LOOP_TYPE               (Clp_ValFirstUser)
 #define DISPOSAL_TYPE           (Clp_ValFirstUser + 1)
@@ -210,6 +211,7 @@ static const char *output_option_types[] = {
 #define SCALE_FACTOR_TYPE       (Clp_ValFirstUser + 9)
 #define OPTIMIZE_TYPE           (Clp_ValFirstUser + 10)
 #define RESIZE_METHOD_TYPE      (Clp_ValFirstUser + 11)
+#define GRAVITY_TYPE            (Clp_ValFirstUser + 12)
 
 const Clp_Option options[] = {
 
@@ -253,6 +255,7 @@ const Clp_Option options[] = {
   { "no-flip", 0, NO_FLIP_OPT, 0, 0 },
 
   { "gamma", 0, GAMMA_OPT, Clp_ValString, Clp_Negate },
+  { "gravity", 0, GRAVITY_OPT, GRAVITY_TYPE, 0 },
   { "gray", 0, GRAY_OPT, 0, 0 },
 
   { "help", 'h', HELP_OPT, 0, 0 },
@@ -623,6 +626,8 @@ close_giffile(FILE *f, int final)
     fclose(f);
 }
 
+static Gt_Crop * copy_crop(Gt_Crop *);
+
 void
 input_stream(const char *name)
 {
@@ -703,6 +708,22 @@ input_stream(const char *name)
   }
 
   input = gfs;
+
+  if (def_frame.gravity_type == GRAVITY_TYPE_CENTER) {
+    Gt_Crop *crop = copy_crop(def_frame.crop);
+    if (gfs->screen_width > gfs->screen_height) {
+      crop->spec_x = (gfs->screen_width - gfs->screen_height) / 2;
+      crop->spec_y = 0;
+      crop->spec_w = gfs->screen_height;
+      crop->spec_h = gfs->screen_height;
+    } else {
+      crop->spec_x = 0;
+      crop->spec_y = (gfs->screen_height - gfs->screen_width) / 2;
+      crop->spec_w = gfs->screen_width;
+      crop->spec_h = gfs->screen_width;
+    }
+    def_frame.crop = crop;
+  }
 
   /* Processing when we've got a new input frame */
   set_mode(BLANK_MODE);
@@ -1385,6 +1406,10 @@ main(int argc, char *argv[])
      "fast", SCALE_METHOD_POINT,
      "good", SCALE_METHOD_MIX,
      (const char*) 0);
+   Clp_AddStringListType
+    (clp, GRAVITY_TYPE, 0,
+     "center", GRAVITY_TYPE_CENTER,
+     (const char*) 0);
   Clp_AddType(clp, DIMENSIONS_TYPE, 0, parse_dimensions, 0);
   Clp_AddType(clp, POSITION_TYPE, 0, parse_position, 0);
   Clp_AddType(clp, SCALE_FACTOR_TYPE, 0, parse_scale_factor, 0);
@@ -1942,6 +1967,10 @@ main(int argc, char *argv[])
         error(0, "%s can be at most 256", Clp_CurOptionName(clp));
         def_output_data.scale_colors = 256;
       }
+      break;
+
+    case GRAVITY_OPT:
+      def_frame.gravity_type = clp->val.i;
       break;
 
       /* RANDOM OPTIONS */

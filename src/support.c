@@ -220,6 +220,8 @@ Whole-GIF options: Also --no-OPTION.\n\
       --gamma G                 Set gamma for color reduction [2.2].\n");
 #endif
   printf("\
+      --gravity TYPE            Set the gravity type, only center is supported.\n");
+  printf("\
       --resize WxH              Resize the output GIF to WxH.\n\
       --resize-width W          Resize to width W and proportional height.\n\
       --resize-height H         Resize to height H and proportional width.\n\
