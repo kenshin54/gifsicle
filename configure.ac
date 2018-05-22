@@ -1,8 +1,9 @@
 dnl Process this file with autoconf to produce a configure script.
-AC_INIT([gifsicle], [1.88])
+AC_INIT([gifsicle], [1.91])
 AC_CONFIG_SRCDIR([src/gifsicle.h])
 AC_CONFIG_HEADERS([config.h])
 AM_INIT_AUTOMAKE
+ac_user_cc=${CC+y}
 
 AC_PROG_MAKE_SET
 AC_PROG_CC
@@ -21,8 +22,11 @@ AC_ARG_ENABLE([gifdiff],
     [if test "x$enableval" != xyes; then build_gifdiff=no; fi])
 
 AC_ARG_ENABLE([warnings],
-    [AS_HELP_STRING([--enable-warnings], [compile with -W -Wall])],
-    [if test "x$enableval" = xyes; then CC="$CC -W -Wall"; fi])
+    [AS_HELP_STRING([--disable-warnings], [compile without -W -Wall])],
+    [:], [enable_warnings=yes])
+if test x$enable_warnings = xyes; then
+    CC="$CC -W -Wall"
+fi
 
 WERROR=
 AC_ARG_ENABLE([werror],
@@ -192,6 +196,18 @@ AC_COMPILE_IFELSE([AC_LANG_PROGRAM(
     [AC_DEFINE([HAVE_EXT_VECTOR_TYPE_VECTOR_TYPES], 1, [Define to 1 if `ext_vector_type' vector types are usable.])
     ac_cv_ext_vector_type_vector_types=yes], [ac_cv_ext_vector_type_vector_types=no])
 AC_MSG_RESULT([$ac_cv_ext_vector_type_vector_types])
+
+AC_MSG_CHECKING([for __builtin_shufflevector])
+AC_COMPILE_IFELSE([AC_LANG_PROGRAM(
+    [AC_INCLUDES_DEFAULT
+    [typedef float float4 __attribute__((ext_vector_type (4)));]],
+    [[float4 a;
+    a[0] = a[1] = a[2] = a[3] = (float) rand();
+    a = __builtin_shufflevector(a, a, 3, 2, 1, 0);
+    printf("%f\n", a[0]);]])],
+    [AC_DEFINE([HAVE___BUILTIN_SHUFFLEVECTOR], 1, [Define to 1 if you have the `__builtin_shufflevector' function.])
+    ac_cv___builtin_shufflevector=yes], [ac_cv___builtin_shufflevector=no])
+AC_MSG_RESULT([$ac_cv___builtin_shufflevector])
 
 AC_ARG_ENABLE([simd],
     [AS_HELP_STRING([--disable-simd], [do not use SIMD instructions])],

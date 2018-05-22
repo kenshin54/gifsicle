@@ -1,5 +1,5 @@
 /* xform.c - Image transformation functions for gifsicle.
-   Copyright (C) 1997-2015 Eddie Kohler, ekohler@gmail.com
+   Copyright (C) 1997-2018 Eddie Kohler, ekohler@gmail.com
    This file is part of gifsicle.
 
    Gifsicle is free software. It is distributed under the GNU Public License,
@@ -253,7 +253,7 @@ crop_image(Gif_Image* gfi, Gt_Frame* fr, int preserve_total_crop)
     fr->left_offset = fr->crop->left_offset;
     fr->top_offset = fr->crop->top_offset;
 
-    if (c.w > 0 && c.h > 0) {
+    if (c.w > 0 && c.h > 0 && gfi->img) {
         uint8_t** old_img = gfi->img;
         gfi->img = Gif_NewArray(uint8_t *, c.h + 1);
         for (j = 0; j < c.h; j++)
@@ -569,6 +569,15 @@ typedef struct {
     int scale_colors;
 } scale_context;
 
+#if ENABLE_THREADS
+static pthread_mutex_t global_colormap_lock = PTHREAD_MUTEX_INITIALIZER;
+#define GLOBAL_COLORMAP_LOCK() pthread_mutex_lock(&global_colormap_lock)
+#define GLOBAL_COLORMAP_UNLOCK() pthread_mutex_unlock(&global_colormap_lock)
+#else
+#define GLOBAL_COLORMAP_LOCK() /* nada */
+#define GLOBAL_COLORMAP_UNLOCK() /* nada */
+#endif
+
 static void sctx_init(scale_context* sctx, Gif_Stream* gfs, int nw, int nh) {
     sctx->gfs = gfs;
     sctx->gfi = NULL;
@@ -623,6 +632,15 @@ static void scale_image_data_point(scale_context* sctx, Gif_Image* gfo) {
     Gif_DeleteArray(xoff);
 }
 
+static void scale_image_update_global_kd3(scale_context* sctx) {
+    Gif_Colormap* gfcm = sctx->gfs->global;
+    assert(sctx->kd3 == &sctx->global_kd3);
+    while (sctx->kd3->nitems < gfcm->ncol) {
+        Gif_Color* gfc = &gfcm->col[sctx->kd3->nitems];
+        kd3_add8g(sctx->kd3, gfc->gfc_red, gfc->gfc_green, gfc->gfc_blue);
+    }
+}
+
 static void scale_image_prepare(scale_context* sctx) {
     if (sctx->gfi->local) {
         sctx->kd3 = &sctx->local_kd3;
@@ -630,7 +648,12 @@ static void scale_image_prepare(scale_context* sctx) {
     } else {
         sctx->kd3 = &sctx->global_kd3;
         if (!sctx->kd3->ks)
-            kd3_init_build(sctx->kd3, NULL, sctx->gfs->global);
+            kd3_init(sctx->kd3, NULL);
+        GLOBAL_COLORMAP_LOCK();
+        scale_image_update_global_kd3(sctx);
+        GLOBAL_COLORMAP_UNLOCK();
+        if (!sctx->kd3->tree)
+            kd3_build(sctx->kd3);
         kd3_enable_all(sctx->kd3);
     }
     if (sctx->gfi->transparent >= 0
@@ -741,12 +764,31 @@ static void scale_image_complete(scale_context* sctx, Gif_Image* gfo) {
                 data[xo] = transparent;
     }
 
+    /* if the global colormap has changed, we must retry
+       (this can only happen if ENABLE_THREADS) */
+    if (!sctx->gfi->local) {
+        Gif_Colormap* gfcm = sctx->gfs->global;
+        GLOBAL_COLORMAP_LOCK();
+        if (gfcm->ncol > sctx->kd3->nitems) {
+            scale_image_update_global_kd3(sctx);
+            GLOBAL_COLORMAP_UNLOCK();
+            goto retry;
+        }
+    }
+
+    /* maybe add some colors */
     if (max_dist > sctx->max_desired_dist) {
         Gif_Colormap* gfcm = sctx->gfi->local ? sctx->gfi->local : sctx->gfs->global;
         if (gfcm->ncol < sctx->scale_colors
-            && scale_image_add_colors(sctx, gfo))
+            && scale_image_add_colors(sctx, gfo)) {
+            if (!sctx->gfi->local)
+                GLOBAL_COLORMAP_UNLOCK();
             goto retry;
+        }
     }
+
+    if (!sctx->gfi->local)
+        GLOBAL_COLORMAP_UNLOCK();
 
     /* apply disposal to sctx->iscr and sctx->oscr */
     if (sctx->imageno != sctx->gfs->nimages - 1) {
@@ -1209,49 +1251,65 @@ void* scale_image_threaded(void* args) {
 #endif
 
 void
+resize_dimensions(int* w, int* h, double new_width, double new_height,
+                  int flags)
+{
+    if (new_width < 0.5 && new_height < 0.5)
+        /* do nothing */
+        return;
+    else if (new_width < 0.5)
+        new_width = *w * new_height / *h;
+    else if (new_height < 0.5)
+        new_height = *h * new_width / *w;
+
+    if (flags & GT_RESIZE_FIT) {
+        double factor, xfactor, yfactor;
+        if (((flags & GT_RESIZE_FIT_DOWN)
+             && *w < new_width + 0.5
+             && *h < new_height + 0.5)
+            || ((flags & GT_RESIZE_FIT_UP)
+                && (*w >= new_width + 0.5
+                    || *h >= new_height + 0.5)))
+            return;
+        xfactor = new_width / *w;
+        yfactor = new_height / *h;
+        if ((xfactor < yfactor) == !(flags & GT_RESIZE_MIN_DIMEN))
+            factor = xfactor;
+        else
+            factor = yfactor;
+        new_width = *w * factor;
+        new_height = *h * factor;
+    }
+
+    if (new_width >= GIF_MAX_SCREEN_WIDTH + 0.5
+        || new_height >= GIF_MAX_SCREEN_HEIGHT + 0.5)
+        fatal_error("new image is too large (max size 65535x65535)");
+
+    *w = (int) (new_width + 0.5);
+    *h = (int) (new_height + 0.5);
+
+    /* refuse to create 0-pixel dimensions */
+    if (*w == 0)
+        *w = 1;
+    if (*h == 0)
+        *h = 1;
+}
+
+void
 resize_stream(Gif_Stream* gfs,
               double new_width, double new_height,
-              int fit, int method, int scale_colors)
+              int flags, int method, int scale_colors)
 {
     int nw, nh, nthreads = thread_count, i;
     (void) i;
 
     Gif_CalculateScreenSize(gfs, 0);
     assert(gfs->nimages > 0);
-
-    if (new_width < 0.5 && new_height < 0.5)
-        /* do nothing */
+    nw = gfs->screen_width;
+    nh = gfs->screen_height;
+    resize_dimensions(&nw, &nh, new_width, new_height, flags);
+    if (nw == gfs->screen_width && nh == gfs->screen_height)
         return;
-    else if (new_width < 0.5)
-        new_width = (int)
-            (gfs->screen_width * new_height / gfs->screen_height + 0.5);
-    else if (new_height < 0.5)
-        new_height = (int)
-            (gfs->screen_height * new_width / gfs->screen_width + 0.5);
-
-    if (new_width >= GIF_MAX_SCREEN_WIDTH + 0.5
-        || new_height >= GIF_MAX_SCREEN_HEIGHT + 0.5)
-        fatal_error("new image is too large (max size 65535x65535)");
-
-    nw = (int) (new_width + 0.5);
-    nh = (int) (new_height + 0.5);
-
-    if (fit && nw >= gfs->screen_width && nh >= gfs->screen_height)
-        return;
-    else if (fit) {
-        double xfactor = (double) nw / gfs->screen_width;
-        double yfactor = (double) nh / gfs->screen_height;
-        if (xfactor < yfactor)
-            nh = (int) (gfs->screen_height * xfactor + 0.5);
-        else if (yfactor < xfactor)
-            nw = (int) (gfs->screen_width * yfactor + 0.5);
-    }
-
-    /* refuse to create 0-pixel dimensions */
-    if (nw == 0)
-        nw = 1;
-    if (nh == 0)
-        nh = 1;
 
     /* no point to MIX or BOX method if we're expanding the image in
        both dimens */
@@ -1271,13 +1329,14 @@ resize_stream(Gif_Stream* gfs,
     if (nthreads > gfs->nimages)
         nthreads = gfs->nimages;
 #if ENABLE_THREADS
-    // Threaded resize only works if the input image is unoptimized.
-    for (i = 0; nthreads > 1 && i < gfs->nimages - 1; ++i)
+    /* Threaded resize only works if the input image is unoptimized. */
+    for (i = 0; nthreads > 1 && i < gfs->nimages; ++i)
         if (gfs->images[i]->left != 0
             || gfs->images[i]->top != 0
             || gfs->images[i]->width != gfs->screen_width
             || gfs->images[i]->height != gfs->screen_height
-            || (gfs->images[i]->disposal != GIF_DISPOSAL_BACKGROUND
+            || (i != gfs->nimages - 1
+                && gfs->images[i]->disposal != GIF_DISPOSAL_BACKGROUND
                 && gfs->images[i+1]->transparent >= 0)) {
             warning(1, "image too complex for multithreaded resize, using 1 thread\n  (Try running the GIF through %<gifsicle -U%>.)");
             nthreads = 1;

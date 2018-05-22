@@ -1,5 +1,5 @@
 /* gifsicle.h - Function declarations for gifsicle.
-   Copyright (C) 1997-2014 Eddie Kohler, ekohler@gmail.com
+   Copyright (C) 1997-2017 Eddie Kohler, ekohler@gmail.com
    This file is part of gifsicle.
 
    Gifsicle is free software. It is distributed under the GNU Public License,
@@ -130,6 +130,7 @@ typedef struct {
   int scaling;
   int resize_width;
   int resize_height;
+  int resize_flags;
   double scale_x;
   double scale_y;
   int scale_method;
@@ -145,7 +146,11 @@ extern Clp_Parser* clp;
 #define GT_SCALING_NONE         0
 #define GT_SCALING_RESIZE       1
 #define GT_SCALING_SCALE        2
-#define GT_SCALING_RESIZE_FIT   3
+
+#define GT_RESIZE_FIT           1
+#define GT_RESIZE_FIT_DOWN      2
+#define GT_RESIZE_FIT_UP        4
+#define GT_RESIZE_MIN_DIMEN     8
 
 #define SCALE_METHOD_POINT      0
 #define SCALE_METHOD_BOX        1
@@ -252,8 +257,10 @@ int     crop_image(Gif_Image* gfi, Gt_Frame* fr, int preserve_total_crop);
 
 void    flip_image(Gif_Image* gfi, Gt_Frame* fr, int is_vert);
 void    rotate_image(Gif_Image* gfi, Gt_Frame* fr, int rotation);
+void    resize_dimensions(int* w, int* h, double new_width, double new_height,
+                          int flags);
 void    resize_stream(Gif_Stream* gfs, double new_width, double new_height,
-                      int fit, int method, int scale_colors);
+                      int flags, int method, int scale_colors);
 
 /*****
  * quantization
